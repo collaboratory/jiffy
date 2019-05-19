@@ -19,6 +19,7 @@ let renderOffset = -1;
 let renderComposableOffset = -1;
 let renderTarget;
 let renderState;
+let renderPromise = false;
 
 let composableStateIndex = -1;
 let composableEffectIndex = -1;
@@ -70,7 +71,7 @@ async function composeToDOM(target) {
 		return target;
 	}
 
-	if (target.__c) {
+	if (target && target.__c) {
 		let curHash = renderState.hash[renderComposableOffset];
 		let newHash = hash([ target, renderComposableOffset ]);
 
@@ -119,16 +120,22 @@ async function composeToDOM(target) {
 			result = await composeToDOM(r);
 		} else if (typeof target.target === "object") {
 			// We don't support objects/classes yet
-			console.log("Attempted to compose unsupported object", target.target);
+			console.warn("Attempted to compose unsupported object", target.target);
 		}
 
 		renderState.rendered[renderComposableOffset] = result;
 
 		return result;
+	} else {
+		console.error("Invalid composition target", target);
 	}
 }
 
 async function render(composable, target) {
+	if (renderPromise) {
+		await renderPromise;
+	}
+
 	if (!target || !target.id) {
 		console.error("Invalid target. Target must be a DOM element with an ID.", target);
 		return;
@@ -141,45 +148,62 @@ async function render(composable, target) {
 			state: [],
 			effects: [],
 			hash: [],
-			rendered: []
+			rendered: [],
+			inProgress: false,
+			listener: false
 		};
+
+		// Handle re-renders
+		globalRenderState[renderTarget].listener = renderEmitter.on(`rerender:${renderTarget}`, () => {
+			render(composable, target);
+		});
 	}
 
 	renderTarget = target.id;
 	renderState = globalRenderState[renderTarget];
-	renderComposableOffset = -1;
 
-	const composed = await composeToDOM(composable);
-
-	target.innerHTML = '';
-	if (Array.isArray(composed)) {
-		composed.forEach(c => {
-			target.appendChild(c);
-		});
-	} else {
-		target.appendChild(composed);
+	if (renderState.inProgress) {
+		return;
 	}
 
-	// Trigger pending mount effects
-	renderState.effects.forEach(({ mount = [], unmount = [] }, key) => {
-		mount.forEach(fn => {
-			if (typeof fn === "function") {
-				unmount.push(fn());
-			}
+	renderState.inProgress = true;
+	renderPromise = new Promise(async resolve => {
+		renderComposableOffset = -1;
+
+		const composed = await composeToDOM(composable);
+
+		target.innerHTML = '';
+		if (Array.isArray(composed)) {
+			composed.forEach(c => {
+				target.appendChild(c);
+			});
+		} else {
+			target.appendChild(composed);
+		}
+
+		// Trigger pending mount effects
+		renderState.effects.forEach(({ mount = [], unmount = [] }, key) => {
+			mount.forEach(fn => {
+				if (typeof fn === "function") {
+					unmount.push(fn());
+				}
+			});
 		});
+
+		// Wait for mount promises (so we can get the unmount back)
+		for (let ei in renderState.effects) {
+			for (let mi in renderState.effects[ei].unmount) {
+				renderState.effects[ei].unmount[mi] = await renderState.effects[ei].unmount[mi];
+			}
+		}
+
+		resolve();
 	});
 
-	// Handle re-renders
-	renderEmitter.on(`rerender:${renderTarget}`, () => {
-		render(composable, target);
-	})
-
-	// Wait for mount promises (so we can get the unmount back)
-	for (let ei in renderState.effects) {
-		for (let mi in renderState.effects[ei].unmount) {
-			renderState.effects[ei].unmount[mi] = await renderState.effects[ei].unmount[mi];
-		}
-	}
+	await renderPromise;
+	renderPromise = false;
+	renderState.inProgress = false;
+	return;
 }
 
 function useEffect(fn) {
@@ -202,6 +226,7 @@ function useState(defaultValue = null) {
 
 	const rco = renderComposableOffset + 0;
 	const csi = composableStateIndex + 0;
+	const tgt = `${renderTarget}`;
 
 	if (!Array.isArray(renderState.state[rco])) {
 		renderState.state[rco] = [];
@@ -215,16 +240,16 @@ function useState(defaultValue = null) {
 	return [cloneDeep(renderState.state[rco][csi]), (newVal) => {
 		// Update the state value
 		if (typeof newVal === "object" && typeof globalState[rco][csi] === "object") {
-			renderState.state[rco][csi] = {
+			globalRenderState[tgt].state[rco][csi] = {
 				...renderState.state[rco][csi],
 				...newVal
 			};
 		} else {
-			renderState.state[rco][csi] = newVal;
+			globalRenderState[tgt].state[rco][csi] = newVal;
 		}
 
 		// Trigger re-render
-		renderEmitter.emit(`rerender:${renderTarget}`);
+		renderEmitter.emit(`rerender:${tgt}`);
 	}];
 }
 

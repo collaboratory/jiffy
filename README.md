@@ -59,8 +59,17 @@ const App = () => (
 	</null>
 );
 
+const AppB = () => (
+	<null>
+		<h1>App B</h1>
+		<Button onClick={onButtonClick} color="green">Click Me</Button>
+		<AsyncComponent />
+		<SyncComponent />
+	</null>
+);
 
 window.onload = () => {
 	render(<App />, document.getElementById("root"));
+	render(<AppB />, document.getElementById("rootB"));
 };
 ```
