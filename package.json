@@ -10,12 +10,11 @@
     "README.md"
   ],
   "scripts": {
+    "build": "npx babel -s --minified --compact -d build/ src/",
     "example": "npx parcel example/index.html -d example/dist -p 3000",
+    "example-build": "npx parcel build example/index.html -d example/dist/",
     "example-react": "npx parcel example-react/index.html -d example-react/dist -p 3001",
-    "build-babel": "npx babel -s --minified --compact -d build/ src/",
-    "build": "npx parcel build src/jiffy.js -d dist/",
-    "build-example": "npx parcel build example/index.html -d example/dist/",
-    "build-example-react": "npx parcel build example-react/index.html -d example-react/dist/",
+    "example-react-build": "npx parcel build example-react/index.html -d example-react/dist/",
     "test": "echo \"Error: no test specified\" && exit 1"
   },
   "author": "Andrew Ewing <drew@collaboratory.io>",

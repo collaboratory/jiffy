@@ -7,7 +7,7 @@ Configure JSX pragma to use `composable`.
 ```
 {
 	"presets": ["@babel/env"],
-	"plugins": ["@babel/transform-runtime", ["transform-react-jsx", { "pragma": "Jiffy.composable" }]]
+	"plugins": ["@babel/transform-runtime", ["transform-react-jsx", { "pragma": "composable" }]]
 }
 ```
 
@@ -20,7 +20,7 @@ Configure JSX pragma to use `composable`.
 Documentation coming soon. For now, gather what you can from this example:
 ```js
 import http from "axios";
-import { composable, render, useState, useEffect } from "../build/jiffy";
+import { composable, render, useState, useEffect } from "@collaboratory/jiffy";
 
 // Since this component returns a promise, it will block rendering until resolved
 async function AsyncComponent() {
