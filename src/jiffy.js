@@ -145,12 +145,9 @@ async function render(composable, target) {
 		};
 	}
 
-	const isReRender = !!globalRenderState[renderTarget].reRender;
-
 	renderTarget = target.id;
 	renderState = globalRenderState[renderTarget];
 	renderComposableOffset = -1;
-	renderState.reRender = false;
 
 	const composed = await composeToDOM(composable);
 
@@ -164,7 +161,6 @@ async function render(composable, target) {
 	}
 
 	// Trigger pending mount effects
-	const mountPromises = [];
 	renderState.effects.forEach(({ mount = [], unmount = [] }, key) => {
 		mount.forEach(fn => {
 			if (typeof fn === "function") {
@@ -178,19 +174,11 @@ async function render(composable, target) {
 		render(composable, target);
 	})
 
-	// await all useEffect promises
-	const promises = [];
-
+	// Wait for mount promises (so we can get the unmount back)
 	for (let ei in renderState.effects) {
 		for (let mi in renderState.effects[ei].unmount) {
 			renderState.effects[ei].unmount[mi] = await renderState.effects[ei].unmount[mi];
 		}
-	}
-
-	// Emit to re-render
-	if (renderState.reRender) {
-		renderState.reRender = false;
-		renderEmitter.emit(`rerender:${renderTarget}`);
 	}
 }
 
@@ -236,7 +224,6 @@ function useState(defaultValue = null) {
 		}
 
 		// Trigger re-render
-		renderState.reRender = true;
 		renderEmitter.emit(`rerender:${renderTarget}`);
 	}];
 }
