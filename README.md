@@ -20,9 +20,13 @@ Configure JSX pragma to use `composable`.
 Documentation coming soon. For now, gather what you can from this example:
 ```js
 import http from "axios";
-import { composable, render, useState, useEffect } from "@collaboratory/jiffy";
+import { composable, renderDOM, renderString, useState, useEffect } from "@collaboratory/jiffy";
 
-// Since this component returns a promise, it will block rendering until resolved
+function Button({ children, ...props }) {
+	const { color, ...attributes } = props;
+	return <button {...attributes} >{children}</button>;
+}
+
 async function AsyncComponent() {
 	const data = await http.get("http://api.coindesk.com/v1/bpi/historical/close.json").then(({data}) => data);
 	const total = Object.values(data.bpi).reduce((a, b) => a + b);
@@ -31,7 +35,6 @@ async function AsyncComponent() {
 	return <div>Total: {total}, Average: {avg}</div>;
 }
 
-// Since this component does not return a promise, it will not block rendering
 function SyncComponent() {
 	const [bpi, setBPI] = useState(null);
 
@@ -51,17 +54,9 @@ function onButtonClick(e) {
 	console.log('Button clicked', e);
 }
 
-const App = () => (
+const App = ({ title = "App A" }) => (
 	<null>
-		<button onClick={onButtonClick} color="green">Click Me</button>
-		<AsyncComponent />
-		<SyncComponent />
-	</null>
-);
-
-const AppB = () => (
-	<null>
-		<h1>App B</h1>
+		<h1>{title}</h1>
 		<Button onClick={onButtonClick} color="green">Click Me</Button>
 		<AsyncComponent />
 		<SyncComponent />
@@ -69,7 +64,16 @@ const AppB = () => (
 );
 
 window.onload = () => {
-	render(<App />, document.getElementById("root"));
-	render(<AppB />, document.getElementById("rootB"));
+	// Async render to string with optional support for re-render callback
+	const rootC = document.getElementById("rootC");
+	renderString(<App title="App C"/>, { onReRender: asString => {
+		rootC.innerHTML = asString;
+	} }).then(asString => {
+		rootC.innerHTML = asString;
+	});
+
+	// All of these renders are async in nature but only one can execute at a time (for now).
+	renderDOM(<App title="App A" />, document.getElementById("root"));
+	renderDOM(<App title="App B" />, document.getElementById("rootB"));
 };
 ```

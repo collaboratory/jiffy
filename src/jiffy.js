@@ -1,5 +1,5 @@
-import hash from "object-hash";
 import emitter from "@emitterware/emitter";
+import md5 from "js-md5";
 
 const eventHandlerMap = {
 	onClick: 'click',
@@ -51,100 +51,122 @@ function cloneDeep(thing) {
 	}
 }
 
-function composable(target, props, ...children) {
-	return { target, props: { ...props, children }, __c: true };
+function uuid() {
+  return ([1e7]+-1e3+-4e3+-8e3+-1e11).replace(/[018]/g, c =>
+    (c ^ crypto.getRandomValues(new Uint8Array(1))[0] & 15 >> c / 4).toString(16)
+  );
 }
 
-async function composeToDOM(target) {
+function composable(target, props = {}, ...children) {
+	return { target, props: (props == null ? {} : props), children, __c: true };
+}
+
+async function compose(composed, composer) {
+	if (Array.isArray(composed)) {
+		return await Promise.all(composed.map(c => compose(c, composer)));
+	}
+
 	renderComposeOffset++;
 	composableStateIndex = 0;
 	composableEffectIndex = 0;
 
-	if (Array.isArray(target)) {
-		return Promise.all(target.map(c => composeToDOM(c)));
-	}
+	const isRaw = ["string", "number"].includes(typeof composed);
 
-	if (typeof target === "string" || typeof target === "number") {
-		return target;
-	}
-
-	if (target && target.__c) {
-		let curHash = renderState.hash[renderComposeOffset];
-		let newHash = hash([ target, renderComposeOffset ]);
-
-		// If nothing has changed, return the same thing we returned before
-		if (curHash === newHash) {
-			const cached = renderState.rendered[renderComposeOffset];
-			if (cached) {
-				return cached;
-			}
-		}
-
-		// Update the hash
-		renderState.hash[renderComposeOffset] = newHash;
-
-		const { children, ...props } = target.props;
-
-		// Compose children first
-		const content = await composeToDOM(children);
-
-		// curState and curEffects should now be updated (if applicable)
-		let result = null;
-		if (typeof target.target === "string") {
-			// We need to make a DOM element
-			if (target.target === "null") {
-				result = content;
-			} else {
-				const element = document.createElement(target.target);
-				const propKeys = Object.keys(props);
-
-				// Event handlers
-				propKeys.filter(key => eventHandlerMap[key]).forEach(key => {
-					element.addEventListener(eventHandlerMap[key], props[key]);
-				});
-
-				// Other props
-				propKeys.filter(key => !eventHandlerMap[key]).forEach(key => {
-					element.setAttribute(key, props[key]);
-				});
-
-				appendTo(element, content);
-				result = element;
-			}
-		} else if (typeof target.target === "function") {
-			// We need to call the function and see what comes out
-			const r = await target.target(target.props);
-			result = await composeToDOM(r);
-		} else if (typeof target.target === "object") {
-			// We don't support objects/classes yet
-			console.warn("Attempted to compose unsupported object", target.target);
-		}
-
-		renderState.rendered[renderComposeOffset] = result;
-
-		return result;
-	} else {
-		console.error("Invalid composition target", target);
-		if (typeof target === "function") {
+	if (!composed || (!isRaw && !composed.__c)) {
+		console.error("Invalid composition subject", composed);
+		if (typeof composed === "function") {
 			console.warn("The above error references a function, perhaps you attempted to render a component instead of a jsx tag.");
 		}
+
+		return;
 	}
+
+	if (isRaw) {
+		return composed;
+	}
+
+	// Check for cache
+	let curHash = renderState.hash[renderComposeOffset];
+	let newHash = `${renderComposeOffset}:${md5(JSON.stringify([ composed, renderComposeOffset ]))}`;
+
+	// If nothing has changed, return the same thing we returned before
+	if (curHash === newHash) {
+		const cached = renderState.rendered[renderComposeOffset];
+		if (cached) {
+			return cached;
+		}
+	}
+
+	// Update the hash
+	renderState.hash[renderComposeOffset] = newHash;
+
+	// Compose children first
+	const content = await compose(composed.children, composer);
+
+	let result;
+	if (typeof composed.target === "string") {
+		if (composed.target === "null") {
+			result = content;
+		} else {
+			result = await composer(composed, content);
+		}
+	} else if (typeof composed.target === "function") {
+		// We need to call the function and see what comes out
+		const out = await composed.target({ ...cloneDeep(composed.props), children: composed.children });
+		result = await compose(out, composer);
+	} else if (typeof composed.target === "object") {
+		// We don't support objects/classes yet
+		console.warn("Attempted to compose unsupported object", composed.target);
+	}
+
+	renderState.rendered[renderComposeOffset] = result;
+
+	return result;
+}
+
+async function composeDOM(raw) {
+	return await compose(raw, async (composed, content) => {
+		const element = document.createElement(composed.target);
+		const propKeys = Object.keys(composed.props);
+
+		// Event handlers
+		propKeys.filter(key => eventHandlerMap[key]).forEach(key => {
+			element.addEventListener(eventHandlerMap[key], composed.props[key]);
+		});
+
+		// Other props
+		propKeys.filter(key => !eventHandlerMap[key]).forEach(key => {
+			element.setAttribute(key, composed.props[key]);
+		});
+
+		appendTo(element, content);
+		return element;
+	});
+}
+
+async function composeString(raw) {
+	return await compose(raw, async (composed, content) => {
+		const { target, props = {} } = composed;
+		// Actually render a raw tag to string
+		return `<${target} ${
+			Object.keys(props)
+				.filter(key => !eventHandlerMap[key])
+				.map(key => `${key}=${props[key]}`)
+				.join(' ')
+		}>${Array.isArray(content) ? content.join("") : content}</${target}>`;
+	});
 }
 
 let isRendering = false;
-async function render(composable, target) {
-	if (!target || !target.id) {
-		console.error("Invalid target. Target must be a DOM element with an ID.", target);
-		return;
-	}
-
+async function render(composable, renderer, composer, identifier, { allowReRender = false, onReRender = false, reRenderConfig = {} } = {}) {
 	while (isRendering) {
-		await new Promise(resolve => setTimeout(resolve, 1));
+		await new Promise(resolve => setTimeout(resolve, 10));
 	}
 
 	isRendering = true;
-	renderTarget = target.id;
+	renderTarget = identifier;
 
+	// If we have never rendered this thing before, let's prepare for it
 	if (!globalRenderState.hasOwnProperty(renderTarget)) {
 		globalRenderState[renderTarget] = {
 			state: [],
@@ -155,148 +177,21 @@ async function render(composable, target) {
 			inProgress: false,
 			listener: false
 		};
-
-		// Handle re-renders
-		globalRenderState[renderTarget].listener = renderEmitter.on(`rerender:${renderTarget}`, ((composable, target, renderTarget) => {
-			return async () => {
-				await render(composable, target);
-			};
-		})(composable, target, renderTarget));
 	}
 
 	renderState = globalRenderState[renderTarget];
 
-	if (renderState.inProgress) {
-		return;
-	}
-
-	renderState.inProgress = true;
-	renderComposeOffset = -1;
-
-	// Render mounted
-	renderState.effects.forEach(effect => {
-		effect.mount = [];
-	});
-
-	const composed = await composeToDOM(composable);
-
-	target.innerHTML = '';
-	if (Array.isArray(composed)) {
-		composed.forEach(c => {
-			target.appendChild(c);
+	// Handle re-renders
+	if (allowReRender || onReRender) {
+		globalRenderState[renderTarget].listener = renderEmitter.on(`rerender:${renderTarget}`, async () => {
+			const out = await render(composable, renderer, composer, identifier, reRenderConfig);
+			if (onReRender) {
+				await onReRender(out);
+			}
 		});
-	} else {
-		target.appendChild(composed);
 	}
 
-	// Trigger pending mount effects
-	await Promise.all(renderState.effects.map(async ({ mount = [], unmount = [] }, key) => {
-		return await Promise.all(mount.map(async fn => {
-			if (typeof fn === "function") {
-				unmount.push(await fn());
-			}
-		}));
-	}));
-
-	renderState.inProgress = false;
-	isRendering = false;
-	return;
-}
-
-async function composeToString(target) {
-	renderComposeOffset++;
-	composableStateIndex = 0;
-	composableEffectIndex = 0;
-
-	if (Array.isArray(target)) {
-		return Promise.all(target.map(c => composeToString(c)));
-	}
-
-	if (typeof target === "string" || typeof target === "number") {
-		return target;
-	}
-
-	if (target && target.__c) {
-		const { children, ...props } = target.props;
-
-		// Compose children first
-		const content = await composeToString(children);
-
-		// curState and curEffects should now be updated (if applicable)
-		let result = null;
-		if (typeof target.target === "string") {
-			// We need to make a DOM element
-			if (target.target === "null") {
-				result = content;
-			} else {
-				// Actually render a raw tag to string
-				result = `<${target.target} ${
-					Object.keys(props)
-						.filter(key => !eventHandlerMap[key])
-						.map(key => `${key}=${props[key]}`)
-						.join(' ')
-				}>${Array.isArray(content) ? content.join("") : content}</${target.target}>`;
-			}
-		} else if (typeof target.target === "function") {
-			// We need to call the function and see what comes out
-			const r = await target.target(target.props);
-			result = await composeToString(r);
-		} else if (typeof target.target === "object") {
-			// We don't support objects/classes yet
-			console.warn("Attempted to compose unsupported object", target.target);
-		}
-
-		return result;
-	} else {
-		console.error("Invalid composition target", target);
-	}
-}
-
-let stringRenderID = -1;
-async function renderToString(composable, { onReRender = false, prevTarget = null } = {}) {
-	// Wait in line
-	while (isRendering) {
-		await new Promise(resolve => setTimeout(resolve, 1));
-	}
-
-
-	if (!prevTarget) {
-		stringRenderID++;
-		renderTarget = `__sr_${stringRenderID}`;
-	} else {
-		renderTarget = `${prevTarget}`;
-	}
-
-	isRendering = true;
-
-	if (!globalRenderState.hasOwnProperty(renderTarget)) {
-		globalRenderState[renderTarget] = {
-			state: [],
-			effects: [],
-			hash: [],
-			rendered: [],
-			hasEffected: [],
-			inProgress: false,
-			listener: false
-		};
-
-		// Handle re-renders
-		if (onReRender) {
-			globalRenderState[renderTarget].listener = renderEmitter.on(`rerender:${renderTarget}`, ((composable, onReRender, renderTarget) => {
-				return async () => {
-					await renderToString(composable, { prevTarget: renderTarget }).then(onReRender);
-				};
-			})(composable, onReRender, renderTarget));
-		}
-	}
-
-	renderState = globalRenderState[renderTarget];
-
-	if (renderState.inProgress) {
-		return;
-	}
-
-	renderState.inProgress = true;
+	// Reset things
 	renderComposeOffset = -1;
 
 	// Render mounted
@@ -304,8 +199,8 @@ async function renderToString(composable, { onReRender = false, prevTarget = nul
 		effect.mount = [];
 	});
 
-	const composed = await composeToString(composable);
-	const response = `${Array.isArray(composed) ? composed.join("\n") : composed}`;
+	const composed = await compose(composable, composer);
+	const rendered = await renderer(composed);
 
 	// Trigger pending mount effects
 	await Promise.all(renderState.effects.map(async ({ mount = [], unmount = [] }, key) => {
@@ -316,16 +211,42 @@ async function renderToString(composable, { onReRender = false, prevTarget = nul
 		}));
 	}));
 
-	// Render mounted
-	renderState.effects.forEach(effect => {
-		effect.mount = [];
-	});
-
 	renderState.inProgress = false;
 	isRendering = false;
+	return rendered;
+}
+
+async function renderDOM(composable, element, renderConfig = {}) {
+	if (!element || !element.id) {
+		console.error("Invalid target. Target must be a DOM element with an ID.", element);
+		return;
+	}
+
+	return await render(composable, async composed => {
+		element.innerHTML = '';
+		if (Array.isArray(composed)) {
+			composed.forEach(c => {
+				element.appendChild(c);
+			});
+		} else {
+			element.appendChild(composed);
+		}
+	}, composeDOM, element.id, {
+		allowReRender: true,
+		...renderConfig
+	});
+}
 
 
-	return response;
+async function renderString(composable, {
+	renderID = false,
+	...renderConfig
+} = {}) {
+	if (!renderID) {
+		renderID = uuid();
+	}
+
+	return await render(composable, async composed => `${Array.isArray(composed) ? composed.join("\n") : composed}`, composeString, renderID, renderConfig);
 }
 
 function useEffect(fn) {
@@ -379,10 +300,11 @@ module.exports = {
 	appendTo,
 	cloneDeep,
 	composable,
-	composeToDOM,
-	composeToString,
+	composeDOM,
+	composeString,
 	render,
-	renderToString,
+	renderDOM,
+	renderString,
 	useEffect,
 	useState
 };
